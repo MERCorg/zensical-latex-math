@@ -1,0 +1,20 @@
+[project]
+name = "zensical-latex-math"
+version = "0.1.0"
+description = "Zensical plugin to render embedded math using LaTeX."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{name = "Maurice Laveaux", email = "m.laveaux@tue.nl"}]
+license = "BSL-1.0"
+license-files = ["LICENSE"]
+dependencies = ["markdown >= 3.4"]
+
+[project.urls]
+Repository = "https://github.com/MERCorg/mkdocs-latex-math"
+
+[project.entry-points."markdown.extensions"]
+latex_math = "latex_math:makeExtension"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
