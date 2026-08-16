@@ -193,6 +193,28 @@ def _replace_fenced_math(
     return fence_re.sub(repl, md_text)
 
 
+_SVG_VIEWBOX_RE = re.compile(
+    r"""\bviewBox=(['"])\s*[-\d.]+\s+(?P<min_y>-?[\d.]+)\s+[-\d.]+\s+(?P<height>[\d.]+)\s*\1"""
+)
+
+
+def _svg_baseline_offset(svg_markup: str) -> float:
+    """Depth (in pt) that a dvisvgm SVG extends below its own baseline.
+
+    dvisvgm places the DVI baseline at local y=0, with the viewBox's min-y
+    equal to minus the ascent. So min_y + height is how far the glyph's
+    lowest point sits below that baseline (descenders) — 0 when nothing
+    hangs below it. Used to replace `vertical-align: middle` (which
+    aligns the box's vertical center to the x-height midline, not the
+    baseline) with the offset that actually lines the rendered TeX up
+    with the surrounding text's baseline.
+    """
+    m = _SVG_VIEWBOX_RE.search(svg_markup)
+    if not m:
+        return 0.0
+    return float(m.group("min_y")) + float(m.group("height"))
+
+
 def _replace_display_math(
     md_text: str, pdflatex_preamble: str, temp_output_dir: str,
     latex_path: str, dvisvgm_path: str,
@@ -207,10 +229,11 @@ def _replace_display_math(
             svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
                                         temp_output_dir, latex_path, dvisvgm_path)
             svg_markup = _namespace_svg_ids(svg_markup, h)
+            descent = _svg_baseline_offset(svg_markup)
             svg_markup = re.sub(r"<\?xml[^?]*\?>", "", svg_markup).strip()
             svg_markup = svg_markup.replace("\n", "")
             span_html = (
-                f'<span style="display: inline-block; vertical-align: middle;">'
+                f'<span style="display: inline-block; vertical-align: {-descent:.3f}pt;">'
                 f'{svg_markup}</span>'
             )
         except Exception as exc:
