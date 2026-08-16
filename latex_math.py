@@ -40,6 +40,28 @@ def _hash(tex: str) -> str:
     return h.hexdigest()
 
 
+def _namespace_svg_ids(svg_markup: str, prefix: str) -> str:
+    """Prefix every id (and the hrefs pointing at it) in a dvisvgm-generated
+    SVG with a hash unique to this snippet's source.
+
+    dvisvgm names glyph paths after nothing more than the font slot and
+    character code (e.g. `g0-102`), which is only unique within a single
+    dvisvgm invocation. Every snippet on a page is rendered by a separate
+    invocation and then inlined as raw SVG into the same HTML document, so
+    two snippets that use different fonts (e.g. roman text in a `tikzpicture`
+    node vs. math italic in `$f$`) can easily assign that same id to two
+    different glyph outlines. Because ids must be document-unique, the
+    browser keeps only the first definition and resolves every `<use>`
+    referencing that id to it - silently swapping in the wrong, differently
+    shaped/scaled glyph everywhere else it's reused, which is what produced
+    the garbled text in the rendered `tikzpicture`. Prefixing with a hash of
+    the snippet's own source keeps ids unique across snippets while staying
+    stable (and cache-friendly) for repeats of the same snippet.
+    """
+    svg_markup = _SVG_ID_DEF_RE.sub(rf"id=\g<1>{prefix}-\g<id>\g<1>", svg_markup)
+    svg_markup = _SVG_ID_REF_RE.sub(rf"\g<1>=\g<2>#{prefix}-\g<id>\g<2>", svg_markup)
+    return svg_markup
+
 def _render_to_svg(
     tex_body: str,
     pdflatex_preamble: str,
@@ -126,8 +148,9 @@ def _replace_fenced_math(
     def repl(m: Match[str]) -> str:
         body = m.group("body").rstrip()
         h = _hash(body)
-        svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
-                                    temp_output_dir, latex_path, dvisvgm_path)
+            svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
+                                        temp_output_dir, latex_path, dvisvgm_path)
+            svg_markup = _namespace_svg_ids(svg_markup, h)
         return f"\n{svg_markup}\n"
 
     return fence_re.sub(repl, md_text)
@@ -143,14 +166,15 @@ def _replace_display_math(
     def repl(m: Match[str]) -> str:
         body = f"${m.group(1).strip()}$"
         h = _hash(body)
-        svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
-                                    temp_output_dir, latex_path, dvisvgm_path)
-        svg_markup = re.sub(r"<\?xml[^?]*\?>", "", svg_markup).strip()
-        svg_markup = svg_markup.replace("\n", "")
-        span_html = (
-            f'<span style="display: inline-block; vertical-align: middle;">'
-            f'{svg_markup}</span>'
-        )
+            svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
+                                        temp_output_dir, latex_path, dvisvgm_path)
+            svg_markup = _namespace_svg_ids(svg_markup, h)
+            svg_markup = re.sub(r"<\?xml[^?]*\?>", "", svg_markup).strip()
+            svg_markup = svg_markup.replace("\n", "")
+            span_html = (
+                f'<span style="display: inline-block; vertical-align: middle;">'
+                f'{svg_markup}</span>'
+            )
         placeholder = f"LATEXSVGINLINE{h}"
         placeholders[placeholder] = span_html
         return placeholder
