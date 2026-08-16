@@ -1,7 +1,10 @@
 import hashlib
+import html
+import logging
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any, Match, Pattern
 
@@ -14,6 +17,9 @@ try:
     _HAS_ZENSICAL = True
 except ImportError:
     _HAS_ZENSICAL = False
+
+
+logger = logging.getLogger("mkdocs.plugins.latex_math")
 
 
 # ----------------------------------------------------------------------------
@@ -40,6 +46,10 @@ def _hash(tex: str) -> str:
     return h.hexdigest()
 
 
+_SVG_ID_DEF_RE = re.compile(r"""\bid=(['"])(?P<id>[^'"]+)\1""")
+_SVG_ID_REF_RE = re.compile(r"""\b(xlink:href|href)=(['"])#(?P<id>[^'"]+)\2""")
+
+
 def _namespace_svg_ids(svg_markup: str, prefix: str) -> str:
     """Prefix every id (and the hrefs pointing at it) in a dvisvgm-generated
     SVG with a hash unique to this snippet's source.
@@ -48,19 +58,13 @@ def _namespace_svg_ids(svg_markup: str, prefix: str) -> str:
     character code (e.g. `g0-102`), which is only unique within a single
     dvisvgm invocation. Every snippet on a page is rendered by a separate
     invocation and then inlined as raw SVG into the same HTML document, so
-    two snippets that use different fonts (e.g. roman text in a `tikzpicture`
-    node vs. math italic in `$f$`) can easily assign that same id to two
-    different glyph outlines. Because ids must be document-unique, the
-    browser keeps only the first definition and resolves every `<use>`
-    referencing that id to it - silently swapping in the wrong, differently
-    shaped/scaled glyph everywhere else it's reused, which is what produced
-    the garbled text in the rendered `tikzpicture`. Prefixing with a hash of
-    the snippet's own source keeps ids unique across snippets while staying
-    stable (and cache-friendly) for repeats of the same snippet.
+    two snippets that use different fonts can easily assign that same id to two
+    different glyph outlines.
     """
     svg_markup = _SVG_ID_DEF_RE.sub(rf"id=\g<1>{prefix}-\g<id>\g<1>", svg_markup)
     svg_markup = _SVG_ID_REF_RE.sub(rf"\g<1>=\g<2>#{prefix}-\g<id>\g<2>", svg_markup)
     return svg_markup
+
 
 def _render_to_svg(
     tex_body: str,
@@ -123,6 +127,33 @@ def _render_to_svg(
         return f.read()
 
 
+def _is_build_command() -> bool:
+    """True when this process was launched via `zensical build` rather than
+    `zensical serve`.
+
+    Zensical runs as a single long-lived embedded Python interpreter for the
+    whole process, so the CLI subcommand chosen at start-up (`sys.argv[1]`)
+    reliably tells us which lifecycle we're in: `build` should fail hard on
+    bad LaTeX/syntax so CI/publishing catches it, while `serve`'s live-reload
+    loop should keep running and show the error inline instead.
+    """
+    return len(sys.argv) > 1 and sys.argv[1] == "build"
+
+
+def _render_error_html(tex_body: str, error: Exception) -> str:
+    """Render a visible error block instead of raising, so a bad LaTeX/syntax
+    snippet turns into an in-page error rather than aborting the whole build
+    (which would otherwise kill `zensical serve`)."""
+    message = html.escape(str(error)).replace("\n", "<br>")
+    source = html.escape(tex_body)
+    return (
+        '<pre style="color:#b00020; background:#fdecea; border:1px solid #b00020; '
+        'border-radius:4px; padding:0.75em; white-space:pre-wrap; '
+        'font-size:0.85em;"><strong>LaTeX render error:</strong> '
+        f"{message}\n\n{source}</pre>"
+    )
+
+
 def _extract_math_preamble(text: str) -> tuple[str, str]:
     fence_re = re.compile(
         r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math_preamble*\b[^\n]*)\n(?P<body>.*?)(?P=fence)\s*(?:\n|$)",
@@ -148,9 +179,15 @@ def _replace_fenced_math(
     def repl(m: Match[str]) -> str:
         body = m.group("body").rstrip()
         h = _hash(body)
+        try:
             svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
                                         temp_output_dir, latex_path, dvisvgm_path)
             svg_markup = _namespace_svg_ids(svg_markup, h)
+        except Exception as exc:
+            logger.error("Failed to render LaTeX math block:\n%s\n%s", body, exc)
+            if _is_build_command():
+                raise
+            return f"\n{_render_error_html(body, exc)}\n"
         return f"\n{svg_markup}\n"
 
     return fence_re.sub(repl, md_text)
@@ -166,6 +203,7 @@ def _replace_display_math(
     def repl(m: Match[str]) -> str:
         body = f"${m.group(1).strip()}$"
         h = _hash(body)
+        try:
             svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
                                         temp_output_dir, latex_path, dvisvgm_path)
             svg_markup = _namespace_svg_ids(svg_markup, h)
@@ -175,6 +213,11 @@ def _replace_display_math(
                 f'<span style="display: inline-block; vertical-align: middle;">'
                 f'{svg_markup}</span>'
             )
+        except Exception as exc:
+            logger.error("Failed to render inline LaTeX math %r: %s", body, exc)
+            if _is_build_command():
+                raise
+            span_html = _render_error_html(body, exc)
         placeholder = f"LATEXSVGINLINE{h}"
         placeholders[placeholder] = span_html
         return placeholder
@@ -212,17 +255,32 @@ class LatexMathPreprocessor(Preprocessor):
         text = "\n".join(lines)
 
         # Per-page placeholder map, read by LatexMathPostprocessor.
-        self.md._latex_svg_placeholders: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        self.md._latex_svg_placeholders = placeholders
 
-        temp_output_dir = self._temp_output_dir()
-        os.makedirs(temp_output_dir, exist_ok=True)
+        try:
+            temp_output_dir = self._temp_output_dir()
+            os.makedirs(temp_output_dir, exist_ok=True)
 
-        text, preamble = _extract_math_preamble(text)
-        text = _replace_fenced_math(text, preamble, temp_output_dir,
-                                    self.config.latex_path, self.config.dvisvgm_path)
-        text = _replace_display_math(text, preamble, temp_output_dir,
-                                     self.config.latex_path, self.config.dvisvgm_path,
-                                     self.md._latex_svg_placeholders)
+            text, preamble = _extract_math_preamble(text)
+            text = _replace_fenced_math(text, preamble, temp_output_dir,
+                                        self.config.latex_path, self.config.dvisvgm_path)
+            text = _replace_display_math(text, preamble, temp_output_dir,
+                                         self.config.latex_path, self.config.dvisvgm_path,
+                                         placeholders)
+        except Exception:
+            # Per-snippet latex/dvisvgm failures are already handled above
+            # (and re-raised here to fail `build` hard when relevant); this
+            # catches anything else unexpected. During `serve`, that must
+            # not take down the dev server for every other page, so log it
+            # and fall back to the untouched source for this page. During
+            # `build`, surface it as a hard failure like the per-snippet
+            # errors above.
+            logger.exception("latex_math preprocessor failed; leaving page source untouched")
+            if _is_build_command():
+                raise
+            return lines
+
         return text.split("\n")
 
 
