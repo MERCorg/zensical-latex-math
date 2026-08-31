@@ -156,7 +156,7 @@ def _render_error_html(tex_body: str, error: Exception) -> str:
 
 def _extract_math_preamble(text: str) -> tuple[str, str]:
     fence_re = re.compile(
-        r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math_preamble*\b[^\n]*)\n(?P<body>.*?)(?P=fence)\s*(?:\n|$)",
+        r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math_preamble*\b[^\n]*)\n(?P<body>.*?)(?P=fence)[ \t]*(?:\n|$)",
         re.S,
     )
     m = fence_re.search(text)
@@ -172,7 +172,7 @@ def _replace_fenced_math(
     latex_path: str, dvisvgm_path: str,
 ) -> str:
     fence_re: Pattern[str] = re.compile(
-        r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math\b[^\n]*)\n(?P<body>.*?)(?P=fence)\s*(?:\n|$)",
+        r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math\b[^\n]*)\n(?P<body>.*?)(?P=fence)[ \t]*(?:\n|$)",
         re.S,
     )
 
@@ -188,7 +188,7 @@ def _replace_fenced_math(
             if _is_build_command():
                 raise
             return f"\n{_render_error_html(body, exc)}\n"
-        return f"\n{svg_markup}\n"
+        return f"\n{svg_markup}\n\n"
 
     return fence_re.sub(repl, md_text)
 
