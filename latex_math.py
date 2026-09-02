@@ -6,7 +6,8 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Match, Pattern
+from re import Match, Pattern
+from typing import Any
 
 from markdown import Extension
 from markdown.postprocessors import Postprocessor
@@ -14,6 +15,7 @@ from markdown.preprocessors import Preprocessor
 
 try:
     from zensical.extensions.context import ContextPreprocessor as _ContextPreprocessor
+
     _HAS_ZENSICAL = True
 except ImportError:
     _HAS_ZENSICAL = False
@@ -22,21 +24,11 @@ except ImportError:
 logger = logging.getLogger("mkdocs.plugins.latex_math")
 
 
-# ----------------------------------------------------------------------------
-# Config
-# ----------------------------------------------------------------------------
-
-
 @dataclass
 class LatexMathConfig:
     latex_path: str = "latex"
     dvisvgm_path: str = "dvisvgm"
     output_dir: str = "tmp"
-
-
-# ----------------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------------
 
 
 def _hash(tex: str) -> str:
@@ -100,8 +92,14 @@ def _render_to_svg(
         f.write(tex)
 
     proc = subprocess.run(
-        [latex_path, "-interaction=nonstopmode", "-halt-on-error",
-         "-output-directory", build_dir, tex_file],
+        [
+            latex_path,
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-output-directory",
+            build_dir,
+            tex_file,
+        ],
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -148,7 +146,7 @@ def _render_error_html(tex_body: str, error: Exception) -> str:
     source = html.escape(tex_body)
     return (
         '<pre style="color:#b00020; background:#fdecea; border:1px solid #b00020; '
-        'border-radius:4px; padding:0.75em; white-space:pre-wrap; '
+        "border-radius:4px; padding:0.75em; white-space:pre-wrap; "
         'font-size:0.85em;"><strong>LaTeX render error:</strong> '
         f"{message}\n\n{source}</pre>"
     )
@@ -157,7 +155,7 @@ def _render_error_html(tex_body: str, error: Exception) -> str:
 def _extract_math_preamble(text: str) -> tuple[str, str]:
     fence_re = re.compile(
         r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math_preamble*\b[^\n]*)\n(?P<body>.*?)(?P=fence)[ \t]*(?:\n|$)",
-        re.S,
+        re.DOTALL,
     )
     m = fence_re.search(text)
     if not m:
@@ -168,27 +166,39 @@ def _extract_math_preamble(text: str) -> tuple[str, str]:
 
 
 def _replace_fenced_math(
-    md_text: str, pdflatex_preamble: str, temp_output_dir: str,
-    latex_path: str, dvisvgm_path: str,
+    md_text: str,
+    pdflatex_preamble: str,
+    temp_output_dir: str,
+    latex_path: str,
+    dvisvgm_path: str,
 ) -> str:
     fence_re: Pattern[str] = re.compile(
         r"(^|\n)(?P<fence>```|~~~)\s*(?P<info>math\b[^\n]*)\n(?P<body>.*?)(?P=fence)[ \t]*(?:\n|$)",
-        re.S,
+        re.DOTALL,
     )
 
     def repl(m: Match[str]) -> str:
         body = m.group("body").rstrip()
         h = _hash(body)
         try:
-            svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
-                                        temp_output_dir, latex_path, dvisvgm_path)
+            svg_markup = _render_to_svg(
+                body,
+                pdflatex_preamble,
+                "latex-" + h,
+                temp_output_dir,
+                latex_path,
+                dvisvgm_path,
+            )
             svg_markup = _namespace_svg_ids(svg_markup, h)
         except Exception as exc:
             logger.error("Failed to render LaTeX math block:\n%s\n%s", body, exc)
             if _is_build_command():
                 raise
             return f"\n{_render_error_html(body, exc)}\n"
-        return f"\n{svg_markup}\n\n"
+        # dvisvgm sizes the SVG to the content's natural point size, which
+        # renders far narrower than the page; the wrapper + CSS (see
+        # extra.css) stretches it to fill the available width instead.
+        return f'\n<div class="latex-math-block">\n{svg_markup}\n</div>\n\n'
 
     return fence_re.sub(repl, md_text)
 
@@ -216,25 +226,37 @@ def _svg_baseline_offset(svg_markup: str) -> float:
 
 
 def _replace_display_math(
-    md_text: str, pdflatex_preamble: str, temp_output_dir: str,
-    latex_path: str, dvisvgm_path: str,
+    md_text: str,
+    pdflatex_preamble: str,
+    temp_output_dir: str,
+    latex_path: str,
+    dvisvgm_path: str,
     placeholders: dict[str, str],
 ) -> str:
-    disp_re: Pattern[str] = re.compile(r"\$([^\n]+?)\$")
+    # Math is often wrapped across source lines by an editor/formatter, so a
+    # single $...$ pair may span several lines. Uses negative lookaheads to
+    # prevent matching across blank lines or unrelated dollar signs.
+    disp_re: Pattern[str] = re.compile(r"\$((?:(?!\$)(?!\n[ \t]*\n)[\s\S])+?)\$")
 
     def repl(m: Match[str]) -> str:
         body = f"${m.group(1).strip()}$"
         h = _hash(body)
         try:
-            svg_markup = _render_to_svg(body, pdflatex_preamble, "latex-" + h,
-                                        temp_output_dir, latex_path, dvisvgm_path)
+            svg_markup = _render_to_svg(
+                body,
+                pdflatex_preamble,
+                "latex-" + h,
+                temp_output_dir,
+                latex_path,
+                dvisvgm_path,
+            )
             svg_markup = _namespace_svg_ids(svg_markup, h)
             descent = _svg_baseline_offset(svg_markup)
             svg_markup = re.sub(r"<\?xml[^?]*\?>", "", svg_markup).strip()
             svg_markup = svg_markup.replace("\n", "")
             span_html = (
                 f'<span style="display: inline-block; vertical-align: {-descent:.3f}pt;">'
-                f'{svg_markup}</span>'
+                f"{svg_markup}</span>"
             )
         except Exception as exc:
             logger.error("Failed to render inline LaTeX math %r: %s", body, exc)
@@ -264,7 +286,7 @@ class LatexMathPreprocessor(Preprocessor):
 
     def _temp_output_dir(self) -> str:
         if _HAS_ZENSICAL:
-            context = _ContextPreprocessor.from_markdown(self.md)
+            context = _ContextPreprocessor.from_markdown(self.md)  # type: ignore
             if context:
                 cfg = context.config
                 site_dir = cfg.get("site_dir", "site")
@@ -279,18 +301,28 @@ class LatexMathPreprocessor(Preprocessor):
 
         # Per-page placeholder map, read by LatexMathPostprocessor.
         placeholders: dict[str, str] = {}
-        self.md._latex_svg_placeholders = placeholders
+        self.md._latex_svg_placeholders = placeholders  # type: ignore
 
         try:
             temp_output_dir = self._temp_output_dir()
             os.makedirs(temp_output_dir, exist_ok=True)
 
             text, preamble = _extract_math_preamble(text)
-            text = _replace_fenced_math(text, preamble, temp_output_dir,
-                                        self.config.latex_path, self.config.dvisvgm_path)
-            text = _replace_display_math(text, preamble, temp_output_dir,
-                                         self.config.latex_path, self.config.dvisvgm_path,
-                                         placeholders)
+            text = _replace_fenced_math(
+                text,
+                preamble,
+                temp_output_dir,
+                self.config.latex_path,
+                self.config.dvisvgm_path,
+            )
+            text = _replace_display_math(
+                text,
+                preamble,
+                temp_output_dir,
+                self.config.latex_path,
+                self.config.dvisvgm_path,
+                placeholders,
+            )
         except Exception:
             # Per-snippet latex/dvisvgm failures are already handled above
             # (and re-raised here to fail `build` hard when relevant); this
@@ -299,7 +331,9 @@ class LatexMathPreprocessor(Preprocessor):
             # and fall back to the untouched source for this page. During
             # `build`, surface it as a hard failure like the per-snippet
             # errors above.
-            logger.exception("latex_math preprocessor failed; leaving page source untouched")
+            logger.exception(
+                "latex_math preprocessor failed; leaving page source untouched"
+            )
             if _is_build_command():
                 raise
             return lines
@@ -313,14 +347,11 @@ class LatexMathPostprocessor(Postprocessor):
     name = "latex_math"
 
     def run(self, text: str) -> str:
-        for placeholder, span_html in getattr(self.md, "_latex_svg_placeholders", {}).items():
+        for placeholder, span_html in getattr(
+            self.md, "_latex_svg_placeholders", {}
+        ).items():
             text = text.replace(placeholder, span_html)
         return text
-
-
-# ----------------------------------------------------------------------------
-# Extension
-# ----------------------------------------------------------------------------
 
 
 class LatexMathExtension(Extension):
