@@ -52,6 +52,40 @@ svg {
 }
 ```
 
+## Sizing
+
+Every snippet is typeset by LaTeX at a fixed `\fontsize{14pt}{14pt}`
+(`_MATH_FONT_PT` in `latex_math.py`). A LaTeX **point** (`pt`) is TeX's own
+native unit of length (1pt = 1/72.27in, close to but not quite the desktop
+publishing "big point"), and it's what `dvisvgm` uses for the `width`,
+`height` and `viewBox` it writes into the SVG it generates from the DVI
+output — a fixed physical size, with no idea what page or font-size it will
+eventually be embedded into.
+
+A CSS **em**, on the other hand, is a *relative* unit: `1em` means "the
+font-size of the element this is used on" (or, for `font-size` itself, the
+parent's font-size). Two elements sized in `em` next to each other stay in
+proportion no matter what the actual font-size resolves to — whether that
+comes from the page theme, a responsive breakpoint, a `<small>` or a table
+cell, or the reader's browser zoom.
+
+dvisvgm's `pt`-based output has none of that: it is one specific, absolute
+size, unrelated to whatever CSS font-size happens to apply where the
+snippet gets inlined into a Markdown page. Left as `pt` (or converted to
+`px`), a block or inline snippet stops tracking the surrounding text the
+moment that text's font-size changes for any reason — it would need to be
+re-rendered, or blown up/down with a separate scaling hack, to match again.
+
+So before an SVG is inlined, `_svg_dims_to_em` rewrites its outer `width`
+and `height` from `Xpt`/`Ypt` to `(X / _MATH_FONT_PT)em`/`(Y /
+_MATH_FONT_PT)em`, leaving the `viewBox` (and everything drawn inside it)
+untouched. That one division fixes the meaning of `1em` for every snippet
+to "`_MATH_FONT_PT` TeX points", so from then on the browser — not LaTeX —
+decides the final pixel size, using whatever font-size cascades to the
+element the SVG landed in. The math stays visually in sync with the
+surrounding text everywhere it's embedded, without a second render pass or
+any container-width-dependent CSS.
+
 ## Configuration
  
 This plugin can be configured via the `mkdocs.yml` configuration file. There are

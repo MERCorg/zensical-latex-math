@@ -41,6 +41,24 @@ def _hash(tex: str) -> str:
 _SVG_ID_DEF_RE = re.compile(r"""\bid=(['"])(?P<id>[^'"]+)\1""")
 _SVG_ID_REF_RE = re.compile(r"""\b(xlink:href|href)=(['"])#(?P<id>[^'"]+)\2""")
 
+# See the README.md
+_MATH_FONT_PT = 14.0
+
+_SVG_DIM_RE = re.compile(r"""\b(width|height)=(['"])([\d.]+)pt\2""")
+
+
+def _svg_dims_to_em(svg_markup: str, reference_pt: float = _MATH_FONT_PT) -> str:
+    """Rewrite the outer <svg>'s pt-based width/height to em, relative to
+    `reference_pt` (see _MATH_FONT_PT above), so the rendered math scales
+    with the surrounding text's font-size rather than a fixed pixel size."""
+
+    def repl(m: Match[str]) -> str:
+        attr, quote, value = m.group(1), m.group(2), float(m.group(3))
+        return f"{attr}={quote}{value / reference_pt:.4f}em{quote}"
+
+    # Only the outer <svg> tag has pt-based width/height attributes.
+    return _SVG_DIM_RE.sub(repl, svg_markup, count=2)
+
 
 def _namespace_svg_ids(svg_markup: str, prefix: str) -> str:
     """Prefix every id (and the hrefs pointing at it) in a dvisvgm-generated
@@ -77,14 +95,14 @@ def _render_to_svg(
 \usepackage[active,tightpage,align=middle]{preview}
 %s
 \begin{document}
-\fontsize{14pt}{14pt}\selectfont
+\fontsize{%spt}{%spt}\selectfont
 
 \begin{preview}
 %s
 \end{preview}
 \end{document}
     """
-    tex = env % (pdflatex_preamble, tex_body)
+    tex = env % (pdflatex_preamble, _MATH_FONT_PT, _MATH_FONT_PT, tex_body)
 
     os.makedirs(build_dir, exist_ok=True)
     tex_file = os.path.join(build_dir, basename + ".tex")
@@ -122,7 +140,11 @@ def _render_to_svg(
         )
 
     with open(svg_path, encoding="utf-8") as f:
-        return f.read()
+        svg_markup = f.read()
+    svg_markup = _svg_dims_to_em(svg_markup)
+    with open(svg_path, "w", encoding="utf-8") as f:
+        f.write(svg_markup)
+    return svg_markup
 
 
 def _is_build_command() -> bool:
@@ -195,9 +217,10 @@ def _replace_fenced_math(
             if _is_build_command():
                 raise
             return f"\n{_render_error_html(body, exc)}\n"
-        # dvisvgm sizes the SVG to the content's natural point size, which
-        # renders far narrower than the page; the wrapper + CSS (see
-        # extra.css) stretches it to fill the available width instead.
+        # svg_markup's width/height are already in em (see _svg_dims_to_em),
+        # so it renders at the same font-size as the surrounding text; the
+        # wrapper (see extra.css) only needs to center it and allow
+        # horizontal scrolling for algorithms too wide for the viewport.
         return f'\n<div class="latex-math-block">\n{svg_markup}\n</div>\n\n'
 
     return fence_re.sub(repl, md_text)
