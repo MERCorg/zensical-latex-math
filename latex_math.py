@@ -187,6 +187,23 @@ def _extract_math_preamble(text: str) -> tuple[str, str]:
     return text[:start] + text[end:], body
 
 
+_INFO_TAG_RE = re.compile(r"^[a-zA-Z0-9-]+$")
+
+
+def _extra_classes(info: str) -> list[str]:
+    """`info` is the fenced block's info string, e.g. `math algorithm` for a
+    ```math algorithm``` block. Any tags after the leading `math` become
+    `latex-math-block--<tag>` modifier classes (see extra.css) on the
+    rendered block's wrapper `<div>` — a hint the page author gives in the
+    markdown itself, not something the plugin infers from the LaTeX body, so
+    it doesn't depend on guessing which environments/macros mean what.
+    Tags that aren't a plain word (so couldn't safely become a CSS class /
+    HTML attribute value) are silently dropped.
+    """
+    tags = info.split()[1:]
+    return [f"latex-math-block--{tag}" for tag in tags if _INFO_TAG_RE.match(tag)]
+
+
 def _replace_fenced_math(
     md_text: str,
     pdflatex_preamble: str,
@@ -201,6 +218,7 @@ def _replace_fenced_math(
 
     def repl(m: Match[str]) -> str:
         body = m.group("body").rstrip()
+        extra_classes = _extra_classes(m.group("info"))
         h = _hash(body)
         try:
             svg_markup = _render_to_svg(
@@ -219,9 +237,10 @@ def _replace_fenced_math(
             return f"\n{_render_error_html(body, exc)}\n"
         # svg_markup's width/height are already in em (see _svg_dims_to_em),
         # so it renders at the same font-size as the surrounding text; the
-        # wrapper (see extra.css) only needs to center it and allow
-        # horizontal scrolling for algorithms too wide for the viewport.
-        return f'\n<div class="latex-math-block">\n{svg_markup}\n</div>\n\n'
+        # wrapper (see extra.css) only needs to align it and allow
+        # horizontal scrolling for blocks too wide for the viewport.
+        classes = " ".join(["latex-math-block", *extra_classes])
+        return f'\n<div class="{classes}">\n{svg_markup}\n</div>\n\n'
 
     return fence_re.sub(repl, md_text)
 

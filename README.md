@@ -52,6 +52,15 @@ svg {
 }
 ```
 
+A fenced block's info string can carry extra tags after `math`, e.g.
+`math algorithm`, or `math algorithm foo` for more than one. Each tag adds
+a `latex-math-block--<tag>` modifier class to the rendered block's wrapper
+`<div>`, alongside the base `latex-math-block` class — so `math algorithm`
+renders as `<div class="latex-math-block latex-math-block--algorithm">`.
+The plugin itself has no opinion on what a tag means; it's a hint the page
+author gives directly in the markdown, not something inferred from the
+LaTeX body.
+
 ## Sizing
 
 Every snippet is typeset by LaTeX at a fixed `\fontsize{14pt}{14pt}`
